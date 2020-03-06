@@ -93,6 +93,7 @@ function check_config {
 
 	params=""
 	db_num=$1
+	let max_worker_processes=3*$db_num
 
 	if [ $2 -eq 0 ]; then
 		port=$PG_PROVIDER_PORT
@@ -107,18 +108,26 @@ function check_config {
 
 		params+="\nwal_level=logical"
 	fi
-	if [ $2 -eq 1 ]; then 
+	if [ $2 -eq 0 ]; then 
 		replication_slots=$(sudo -u postgres $bin_path/psql -At -p $port  -c "show max_replication_slots")
 		if [ $replication_slots -lt $db_num ]; then
 
 			params+="\nmax_replication_slots=$db_num"
 		fi
 
+		
+
 		wal_senders=$(sudo -u postgres $bin_path/psql -At -p $port  -c "show max_wal_senders")
 		if [ $wal_senders -lt $db_num ]; then
 
 			params+="\nmax_wal_senders=$db_num"
 		fi
+	else
+		worker_processes=$(sudo -u postgres $bin_path/psql -At -p $port  -c "show max_worker_processes")
+		if [ $worker_processes -lt $max_worker_processes ]; then
+
+			params+="\nmax_worker_processes=$max_worker_processes"
+		fi	
 	fi
 
 	logical_preload_libruary=$(sudo -u postgres $bin_path/psql -At -p $port -c "show shared_preload_libraries")
@@ -136,38 +145,43 @@ function check_pg_hba {
 	pass
 }
 
-#creating role for relpication
-function create_superrole {
+
+function create_provider_node {
+	db=$1
+	echo "create extension on provider node for $db\n"
+	create_extension=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -d $db -c "create extension pglogical")
+	echo "create pglogical node on provider node for $db\n"
+	create_node=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -d $db -c "select * from pglogical.create_node(node_name:='$db', dsn:='host=127.0.0.1 port=$PG_PROVIDER_PORT dbname=$db')")
+	echo "create replication set for tables and sequences on $db\n"
+	create_replication_set_table=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -d $db -c "select * from pglogical.replication_set_add_all_tables('default', ARRAY['public'])")
+	create_replication_set_sequences=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -d $db -c "select * from pglogical.replication_set_add_all_sequences('default', ARRAY['public'])")
+}
+
+function create_subscriber_node {
+	db=$1
+	pass=$2
+	echo "create extension on subscriber node for $db\n"
+	create_extension=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -At -d $db -c "create extension pglogical")
+	echo "create pglogical node on subscriber node for $db\n"
+	create_node=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -At -d $db -c "select * from pglogical.create_node(node_name:='sub_$db', dsn:='host=127.0.0.1 port=$PG_SUBSCRIBER_PORT dbname=$db user=su password=$pass')")
+	echo "create pglogical subcription on subscriber node for $db\n"
+	create_subscription=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -At -d $db -c "select * from pglogical.create_subscription(subscription_name:='subs_$db', provider_dsn:='host=127.0.0.1 port=$PG_PROVIDER_PORT dbname=$db user=su password=$pass')")
+}
+
+function check_replication {
 	pass
 }
-#sudo -u postgres psql -p 5433 -c "CREATE role su with superuser replication encrypted password 'asdf'"
-#sudo -u postgres psql -p 5432 -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo "drop extension pglogical for $db"; sudo -u postgres psql -p 5432 -d $db -c "drop extension pglogical"; done
-#sudo -u postgres psql -5432 -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo "drop schema pglogical for $db"; sudo -u postgres psql -p 5432 -d $db -c "create schema pglogical"; done
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo "create extension pglogical for $db"; sudo -u postgres psql -d $db -p 5432 -c "create extension pglogical"; done
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo "create extension pglogical for $db"; sudo -u postgres psql -d $db -p 5433 -c "create extension pglogical"; done
-#echo "create providers_node"
-#read -p "Press enter to continue"
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo $db; sudo -u postgres psql -p 5432 -d $db -c "select * from pglogical.create_node(node_name:='"$db"_provider', dsn:='host=127.0.0.1 port=5432 dbname=$db ')"; done
-#echo "create replication table sets"
-#read -p "Press enter to continue"
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo $db; sudo -u postgres psql -p 5432  -d $db -c " select * from pglogical.replication_set_add_all_tables('default', ARRAY['public']);"; done
-#echo "create replication sequences set"
-#read -p "Press enter to continue"
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo $db; sudo -u postgres psql -p 5432 -d $db -c " select * from pglogical.replication_set_add_all_sequences('default', ARRAY['public'], true);"; done
-#echo "create subscriber node"
-#read -p "Press enter to continue"
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo $db; sudo -u postgres psql -p 5433 -d $db -c "select * from pglogical.create_node(node_name:='"$db"_subscriber', dsn:='host=127.0.0.1 port=5433 dbname=$db user=su password=asdf')"; done
-#echo "create subscription"
-#read -p "Press enter to continue"
-#sudo -u postgres psql -At -c "select datname from pg_database" |grep -vE 'template' |while read db ; do echo $db; sudo -u postgres psql -p 5433 -d $db -c "select * from pglogical.create_subscription(subscription_name:='"$db"_subscription', provider_dsn:='host=127.0.0.1 port=5432 dbname=$db user=su password=asdf')"; done
-#echo "Wait a while..."
-#status=$(replication_status $databases)
-#echo $status
-databases=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -At -c "select datname from pg_database" |grep -vE 'template' | tr "\ " "\n${databases[*]}")
+
+function seq_sync {
+	sync_comm=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -d $db -c "select pglogical.synchronize_sequence( seqoid ) from pglogical.sequence_state")
+}
+
+databases=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -c "select datname from pg_database" |grep -vE 'template' | tr "\ " "\n${databases[*]}")
 db_num=0
 for base in $databases; do
 	db_num=$((db_num+1))
 done
+config_test=0
 
 #checking provider configuration
 provider_config_test=$(check_config $db_num 0)
@@ -175,18 +189,65 @@ provider_config_test=$(check_config $db_num 0)
 if [ -z ${provider_config_test} ]; then
 	echo "Provider node config is ok"
 else
-	echo -e "please set this parameters at postgres configuration files: \n"$provider_config_test
-	exit
+	echo -e "\n!!!Provider configuration is not ready!!!.\nPlease set this parameters at postgres configuration files: \n\n\n##########################\n##########################"$provider_config_test"\n\n--------------------------------------------------------" 
+	config_test=1
 fi
 
 #checking subscriber configuration
 subscriber_config_test=$(check_config $db_num 1)
 
-if [ -z ${subscriber_config_test} ]; then
+if [ -z "${subscriber_config_test}" ]; then
 	echo "Subscriber node config is ok"
 else
-	echo -e "please set this parameters at postgres configuration files: \n"$subscriber_config_test
-	exit
+	echo -e "\n!!!Subscriber configuration is not ready!!!.\nPlease set this parameters at postgres configuration files: \n\n##########################\n##########################"$subscriber_config_test"\n\n--------------------------------------------------------"
+	config_test=1
 fi
+
+if [ $config_test -eq 1 ]; then
+	echo "Fix configuration, restart PG and start once again"
+	exit
+
+fi	
+
+##starting to replicate
+supassword=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 13 ; echo '')
+
+#create superuser to relicte initialisation
+provider_su=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/psql -p $PG_PROVIDER_PORT -At -c "CREATE role su with login superuser replication encrypted password '$supassword'")
+
+#dump_roles
+
+echo "DUMP ROLES"
+
+dump_roles=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/pg_dumpall -p $PG_PROVIDER_PORT --roles-only > /tmp/roles.sql)
+restore_roles=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -f /tmp/roles.sql)
+
+
+
+#create schema on subscriber
+for db in $databases; do
+	provider_schema_dump=$(sudo -u postgres $PG_PROVIDER_BIN_PATH/pg_dump -p $PG_PROVIDER_PORT -d $db --schema-only > /tmp/$db.sql)
+	subscriber_db_create=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -c "create database $db")
+	subscriber_schema_create=$(sudo -u postgres $PG_SUBSCRIBER_BIN_PATH/psql -p $PG_SUBSCRIBER_PORT -d $db -f /tmp/$db.sql)
+done
+
+for db in $databases; do
+	comm=$(create_provider_node $db)
+	echo -e $comm
+done
+
+for db in $databases; do
+	comm=$(create_subscriber_node $db $supassword)
+	echo -e $comm
+done
+
+echo "sleep a while"
+sleep 30
+
+echo "resync all sequences"
+for db in $databases; do
+	comm=$(seq_sync $db)
+	echo -e $comm
+done
 
 echo "Finish"
